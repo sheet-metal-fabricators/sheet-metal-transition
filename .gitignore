@@ -1,0 +1,15 @@
+# Ignore everything by default
+*
+!.gitignore
+
+# Allow only the sheet metal app files
+!sheet_metal_app.py
+!sheet_metal_transition.py
+!requirements.txt
+!.streamlit/
+!.streamlit/config.toml
+
+# Never commit credentials, logs, or trading files
+*.json
+*.log
+*.bat
