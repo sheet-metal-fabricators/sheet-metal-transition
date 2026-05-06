@@ -171,6 +171,166 @@ def surface_area(triangles):
 
 
 # ============================================================
+#  Thickness & bend allowance calculations
+# ============================================================
+
+def _tri_normal(tri):
+    p0, p1, p2 = [np.asarray(v, float) for v in tri]
+    n = np.cross(p1 - p0, p2 - p0)
+    nrm = np.linalg.norm(n)
+    return n / nrm if nrm > 1e-10 else n
+
+
+def calculate_bend_data(triangles, corner_lines_3d, t, r_bend, k_factor=0.44):
+    """
+    Compute the dihedral angle, bend allowance, and bend deduction at each
+    K-line (rectangle corner fold line).
+
+    Strategy
+    --------
+    For each rectangle corner (bot_pt, z=0):
+      1. Collect all triangles that contain that corner vertex.
+      2. Among those triangles, find pairs that share a second vertex at z > 0
+         (i.e., a circle point) — that shared edge IS the fold line.
+      3. Compute the dihedral angle between the two triangle planes.
+      4. Average the dihedral angles found (there may be more than one fold
+         edge at a given corner for coarser segment counts).
+
+    Parameters
+    ----------
+    triangles       : list[(p0,p1,p2)]  from build_transition
+    corner_lines_3d : list[(top_pt, bot_pt)]  K-line endpoints in 3-D
+    t               : material thickness  (mm)
+    r_bend          : inside bend radius  (mm)
+    k_factor        : 0.33 coining | 0.44 air bend | 0.50 theoretical
+
+    Returns
+    -------
+    list of dicts – one per K-line
+    """
+    results = []
+
+    def pkey(p, digits=1):
+        return (round(float(p[0]), digits),
+                round(float(p[1]), digits),
+                round(float(p[2]), digits))
+
+    # Pre-index: vertex key → list of triangles that contain it
+    from collections import defaultdict
+    vtx_to_tris = defaultdict(list)
+    for tri in triangles:
+        for v in tri:
+            vtx_to_tris[pkey(v)].append(tri)
+
+    for ki, (top_pt, bot_pt) in enumerate(corner_lines_3d):
+        label  = "K{}".format(ki + 1)
+        ck     = pkey(bot_pt)                      # corner key (z=0)
+        c_tris = vtx_to_tris.get(ck, [])
+
+        if len(c_tris) < 2:
+            results.append(dict(label=label, bend_angle_deg=None,
+                                bend_allowance=None, bend_deduction=None,
+                                note="corner not found in triangulation"))
+            continue
+
+        # For every pair of triangles sharing the corner, check whether they
+        # also share exactly one other vertex that is a circle point (z > 0).
+        # That shared (corner, circle_pt) edge is the fold line.
+        fold_angles = []
+        checked_edges = set()
+
+        for i in range(len(c_tris)):
+            for j in range(i + 1, len(c_tris)):
+                t1, t2 = c_tris[i], c_tris[j]
+                vk1 = {pkey(v) for v in t1}
+                vk2 = {pkey(v) for v in t2}
+                shared_keys = vk1 & vk2 - {ck}    # shared vertices besides corner
+
+                if len(shared_keys) != 1:
+                    continue                        # not adjacent along one edge
+
+                shared_k = next(iter(shared_keys))
+                if shared_k[2] < 0.1:              # must be a circle point (z > 0)
+                    continue
+
+                edge_id = tuple(sorted([ck, shared_k]))
+                if edge_id in checked_edges:
+                    continue
+                checked_edges.add(edge_id)
+
+                n1 = _tri_normal(t1)
+                n2 = _tri_normal(t2)
+                cos_d = float(np.clip(np.dot(n1, n2), -1.0, 1.0))
+                dihedral   = float(np.arccos(cos_d))
+                bend_angle = float(np.pi - dihedral)
+                bend_angle = max(0.001, min(bend_angle, np.pi))
+                fold_angles.append(bend_angle)
+
+        if not fold_angles:
+            results.append(dict(label=label, bend_angle_deg=None,
+                                bend_allowance=None, bend_deduction=None,
+                                note="fold edge not found — try more segments"))
+            continue
+
+        # Use the average bend angle across all fold edges at this corner
+        bend_angle     = float(np.mean(fold_angles))
+        bend_angle_deg = float(np.degrees(bend_angle))
+
+        BA   = bend_angle * (r_bend + k_factor * t)
+        OSSB = (r_bend + t) * float(np.tan(bend_angle / 2))
+        BD   = 2.0 * OSSB - BA
+
+        results.append(dict(
+            label          = label,
+            bend_angle_deg = round(bend_angle_deg, 1),
+            bend_allowance = round(BA,   2),
+            bend_deduction = round(BD,   2),
+        ))
+
+    return results
+
+
+def thickness_report(t, r_bend, k_factor, bend_data, rw, rh, cd, h):
+    """
+    Return a plain-text / structured dict with all thickness-related guidance.
+    """
+    total_BA = sum(d["bend_allowance"] for d in bend_data
+                   if d["bend_allowance"] is not None)
+    total_BD = sum(d["bend_deduction"] for d in bend_data
+                   if d["bend_deduction"] is not None)
+
+    # Seam edge prep recommendation
+    if t <= 1.5:
+        seam_prep = "Square butt — no bevel needed"
+    elif t <= 4.0:
+        seam_prep = "Light chamfer 15-20° each edge (half-V)"
+    elif t <= 8.0:
+        seam_prep = "Single-V bevel 30-35° each edge"
+    else:
+        seam_prep = "Full V or double-V bevel 35-45° each edge"
+
+    # Minimum recommended inside radius
+    r_min = 0.5 * t   # mild steel annealed
+
+    # Inside / outside circle circumference
+    circ_neutral = np.pi * cd
+    circ_inside  = np.pi * (cd - t)
+    circ_outside = np.pi * (cd + t)
+
+    return dict(
+        t=t, r_bend=r_bend, k_factor=k_factor,
+        total_bend_allowance = round(total_BA, 2),
+        total_bend_deduction = round(total_BD, 2),
+        seam_edge_prep       = seam_prep,
+        min_inside_radius    = round(r_min, 2),
+        circle_circ_neutral  = round(circ_neutral, 2),
+        circle_circ_inside   = round(circ_inside, 2),
+        circle_circ_outside  = round(circ_outside, 2),
+        bend_data            = bend_data,
+    )
+
+
+# ============================================================
 #  Flat-pattern unfolding
 # ============================================================
 

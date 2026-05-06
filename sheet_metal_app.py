@@ -38,6 +38,8 @@ from sheet_metal_transition import (
     export_dxf,
     _make_preview,
     _make_workshop,
+    calculate_bend_data,
+    thickness_report,
 )
 
 # ══════════════════════════════════════════════════════════════════
@@ -125,6 +127,53 @@ with st.container():
 
 st.divider()
 
+# ── Material / thickness parameters ──────────────────────────────
+with st.container():
+    st.subheader("Material & Bending Parameters")
+    st.caption(
+        "These affect bend allowance at the 4 corner fold lines (K1–K4), "
+        "seam edge preparation, and blank size correction. "
+        "The flat pattern geometry above is always at the **mid-surface (neutral axis)**."
+    )
+
+    tc1, tc2, tc3, tc4 = st.columns(4)
+    with tc1:
+        t_mm = st.number_input(
+            "Sheet Thickness  (mm)", min_value=0.3, max_value=50.0,
+            value=1.5, step=0.5, key="t_mm",
+            help="Thickness of the sheet metal you will use"
+        )
+    with tc2:
+        r_bend_mm = st.number_input(
+            "Inside Bend Radius  (mm)", min_value=0.0, max_value=50.0,
+            value=round(1.5 * 1.0, 1), step=0.5, key="r_bend",
+            help="Inside radius at K-line folds. Rule of thumb: 1× thickness for mild steel"
+        )
+    with tc3:
+        k_factor = st.selectbox(
+            "K-Factor  (bend method)",
+            options=[0.33, 0.38, 0.44, 0.50],
+            index=2,
+            key="kfactor",
+            format_func=lambda x: {
+                0.33: "0.33 — Coining / bottoming",
+                0.38: "0.38 — Bottom bending",
+                0.44: "0.44 — Air bending  (most common)",
+                0.50: "0.50 — Theoretical / soft material",
+            }[x],
+            help="K-factor sets where the neutral axis sits inside the thickness"
+        )
+    with tc4:
+        material = st.selectbox(
+            "Material",
+            ["Mild Steel (MS)", "Stainless Steel (SS)", "Aluminium",
+             "Galvanised Steel", "Copper / Brass"],
+            key="material",
+            help="Used for edge-prep and minimum-radius guidance only"
+        )
+
+st.divider()
+
 # ══════════════════════════════════════════════════════════════════
 #  Generate button
 # ══════════════════════════════════════════════════════════════════
@@ -134,7 +183,7 @@ gen = st.button("⚙  Generate Development", type="primary", use_container_width
 #  Compute  (on Generate click, or re-use cached result)
 # ══════════════════════════════════════════════════════════════════
 
-def _compute(rw, rh, cd, h, ox, oy, n):
+def _compute(rw, rh, cd, h, ox, oy, n, t_mm, r_bend_mm, k_factor):
     tris, rc, cp, rpp, cl3d, sp3d = build_transition(rw, rh, cd, h, ox, oy, n)
     unfolded, placed = unfold_triangles(tris)
     boundaries       = get_all_boundaries(unfolded)
@@ -142,18 +191,23 @@ def _compute(rw, rh, cd, h, ox, oy, n):
     area             = surface_area(tris)
     c_refs, r_refs, k_refs = get_reference_points(cp, rpp, rc, placed)
 
-    all2d  = [p for t in unfolded for p in t]
+    all2d  = [p for tri in unfolded for p in tri]
     xs     = [float(p[0]) for p in all2d]
     ys     = [float(p[1]) for p in all2d]
     span_x = max(xs) - min(xs)
     span_y = max(ys) - min(ys)
 
+    bend_data = calculate_bend_data(tris, cl3d, t_mm, r_bend_mm, k_factor)
+    thick_rep = thickness_report(t_mm, r_bend_mm, k_factor,
+                                 bend_data, rw, rh, cd, h)
+
     return dict(
-        tris=tris, rc=rc, cp=cp, rpp=rpp,
+        tris=tris, rc=rc, cp=cp, rpp=rpp, cl3d=cl3d,
         unfolded=unfolded, boundaries=boundaries,
         seam_2d=seam_2d, c2d=c2d, area=area,
         c_refs=c_refs, r_refs=r_refs, k_refs=k_refs,
         span_x=span_x, span_y=span_y,
+        thick_rep=thick_rep,
     )
 
 
@@ -212,6 +266,241 @@ def _csv_bytes(c_refs, r_refs, k_refs, rw, rh, cd, h, ox, oy):
 # ══════════════════════════════════════════════════════════════════
 #  Fabrication guide  (plain-language, layman-friendly)
 # ══════════════════════════════════════════════════════════════════
+
+def _show_thickness_tab(tr, t, r_bend, k_factor, material, cd, span_x, span_y):
+    """Thickness corrections, bend allowance table, and seam edge prep."""
+
+    import pandas as pd
+
+    st.markdown("## Thickness & Bending Corrections")
+    st.caption(
+        "The flat pattern coordinates are computed at the **mid-surface** "
+        "(neutral axis). The corrections below tell you how to adjust for "
+        "real material thickness."
+    )
+
+    if not tr:
+        st.warning("Generate the development first.")
+        return
+
+    # ── Key facts ────────────────────────────────────────────────
+    st.markdown("### Your material parameters")
+    f1, f2, f3, f4 = st.columns(4)
+    f1.metric("Thickness",         "{} mm".format(t))
+    f2.metric("Inside Bend Radius","{} mm".format(r_bend))
+    f3.metric("K-Factor",          str(k_factor))
+    f4.metric("Material",          material)
+
+    st.divider()
+
+    # ── What mid-surface means ────────────────────────────────────
+    st.markdown("### What the flat pattern coordinates represent")
+    st.info(
+        "All X, Y coordinates in the pattern are measured at the **mid-surface** "
+        "(halfway through the thickness). This is the neutral axis — the line that "
+        "neither stretches nor compresses during bending or rolling.\n\n"
+        "- If you **mark and cut from the OUTSIDE face**: add **{:.2f} mm** to all "
+        "outward dimensions (= t/2 = {:.1f}/2).\n"
+        "- If you **mark and cut from the INSIDE face**: subtract **{:.2f} mm** from "
+        "all dimensions.\n"
+        "- For thin sheet (t < 1.5 mm) this difference is negligible — ignore it.".format(
+            t / 2, t, t / 2)
+    )
+
+    st.divider()
+
+    # ── Bend allowance at each K-line ────────────────────────────
+    st.markdown("### Bend allowance at each corner fold line (K1–K4)")
+    st.markdown(
+        "When you bend the metal at a K-line, the material on the **outside** "
+        "of the bend stretches slightly. This means the flat blank needs to be "
+        "**slightly larger** than what the pattern shows. The amount extra is called "
+        "the **Bend Allowance (BA)**. The **Bend Deduction (BD)** tells you how much "
+        "to subtract from each flat leg if you are dimensioning from the outside faces."
+    )
+
+    bend_data = tr.get("bend_data", [])
+    if bend_data:
+        rows = []
+        for d in bend_data:
+            if d.get("bend_angle_deg") is not None:
+                rows.append({
+                    "Corner": d["label"],
+                    "Bend Angle (°)":   d["bend_angle_deg"],
+                    "Bend Allowance (mm)": d["bend_allowance"],
+                    "Bend Deduction (mm)": d["bend_deduction"],
+                    "Meaning": (
+                        "Add {:.2f} mm to blank at this fold".format(d["bend_allowance"])
+                        if d["bend_allowance"] else "—"
+                    ),
+                })
+            else:
+                rows.append({
+                    "Corner": d["label"],
+                    "Bend Angle (°)":      "—",
+                    "Bend Allowance (mm)": "—",
+                    "Bend Deduction (mm)": "—",
+                    "Meaning": d.get("note", ""),
+                })
+
+        df_bend = pd.DataFrame(rows)
+        st.dataframe(df_bend, use_container_width=True, hide_index=True)
+
+        total_ba = tr.get("total_bend_allowance", 0)
+        total_bd = tr.get("total_bend_deduction", 0)
+
+        st.success(
+            "**Total extra material across all 4 bends:**  "
+            "Bend Allowance = **{:.2f} mm**   |   "
+            "Bend Deduction = **{:.2f} mm**\n\n"
+            "In practice: cut the flat blank **{:.1f} mm longer** than the "
+            "pattern dimensions to have enough material for all bends.".format(
+                total_ba, total_bd, total_ba)
+        )
+    else:
+        st.warning("Bend data not available. Re-generate the pattern.")
+
+    st.divider()
+
+    # ── Circle edge rolling ───────────────────────────────────────
+    st.markdown("### Circle edge — rolling allowance")
+    st.markdown(
+        "Rolling does not significantly change the flat length of the material "
+        "(unlike a sharp bend). However the **diameter you set on the roller** "
+        "depends on which face is the reference:"
+    )
+
+    circ_n = tr.get("circle_circ_neutral", 0)
+    circ_i = tr.get("circle_circ_inside",  0)
+    circ_o = tr.get("circle_circ_outside", 0)
+
+    cc1, cc2, cc3 = st.columns(3)
+    cc1.metric("Neutral axis circumference",
+               "{:.1f} mm".format(circ_n),
+               help="= π × D. Pattern is developed at this length.")
+    cc2.metric("Inside face circumference",
+               "{:.1f} mm".format(circ_i),
+               "−{:.1f} mm vs neutral".format(circ_n - circ_i),
+               help="= π × (D − t). Set roller to this if measuring from inside.")
+    cc3.metric("Outside face circumference",
+               "{:.1f} mm".format(circ_o),
+               "+{:.1f} mm vs neutral".format(circ_o - circ_n),
+               help="= π × (D + t). Set roller to this if measuring from outside.")
+
+    st.info(
+        "**Rule of thumb:** Roll to the **inside diameter** = (Circle D − thickness) = "
+        "**{:.1f} mm**.  The outside face will then equal the specified circle diameter.".format(
+            cd - t)
+    )
+
+    st.divider()
+
+    # ── Seam edge preparation ─────────────────────────────────────
+    st.markdown("### Seam edge preparation for welding")
+
+    seam_prep = tr.get("seam_edge_prep", "")
+
+    prep_details = {
+        "Square butt — no bevel needed": dict(
+            icon="✅",
+            detail=(
+                "For t ≤ 1.5 mm — leave the cut edges square (90°).\n"
+                "Clean with a file or flap disc to remove burrs.\n"
+                "Gap between edges: 0 – 0.5 mm for MIG/TIG."
+            ),
+            diagram="Edge: |  | (square, no angle)"),
+        "Light chamfer 15-20° each edge (half-V)": dict(
+            icon="⚠️",
+            detail=(
+                "For t 1.5–4 mm — grind a 15–20° chamfer on each seam edge "
+                "(both pieces).\n"
+                "Total included angle ≈ 30–40°.\n"
+                "Root gap: 1–2 mm. Add backing strip if available."
+            ),
+            diagram="Edge: /  \\ (light chamfer each side)"),
+        "Single-V bevel 30-35° each edge": dict(
+            icon="⚠️",
+            detail=(
+                "For t 4–8 mm — grind a 30–35° bevel on each seam edge.\n"
+                "Total included angle ≈ 60–70°  (classic single-V groove).\n"
+                "Root gap: 2–3 mm. Root face: 1–1.5 mm flat at root.\n"
+                "Weld in two or more passes. Back-gouge and weld back side."
+            ),
+            diagram="Edge:  /    \\  (V-groove)"),
+        "Full V or double-V bevel 35-45° each edge": dict(
+            icon="🔴",
+            detail=(
+                "For t > 8 mm — 35–45° bevel each edge, double-V if accessible "
+                "from both sides.\n"
+                "Root face 2 mm. Root gap 3 mm. Multi-pass weld.\n"
+                "Preheat to 100–150 °C for MS plate > 12 mm.\n"
+                "Post-weld check with dye-penetrant or UT if structural."
+            ),
+            diagram="Edge:  /    \\  with root land (heavy V)"),
+    }
+
+    info = prep_details.get(seam_prep, dict(icon="ℹ️", detail=seam_prep, diagram=""))
+    st.markdown("**{} Recommendation for {} mm {}:  {}**".format(
+        info["icon"], t, material, seam_prep))
+    st.markdown(info["detail"])
+    st.code(info["diagram"], language=None)
+
+    st.divider()
+
+    # ── Minimum bend radius ───────────────────────────────────────
+    st.markdown("### Minimum inside bend radius")
+    r_min = tr.get("min_inside_radius", t * 0.5)
+
+    mat_factors = {
+        "Mild Steel (MS)":       (0.5, 1.0),
+        "Stainless Steel (SS)":  (1.0, 2.0),
+        "Aluminium":             (0.5, 1.5),
+        "Galvanised Steel":      (0.5, 1.2),
+        "Copper / Brass":        (0.3, 0.8),
+    }
+    lo_f, hi_f = mat_factors.get(material, (0.5, 1.0))
+
+    r_lo = round(lo_f * t, 1)
+    r_hi = round(hi_f * t, 1)
+
+    if r_bend < r_lo:
+        st.error(
+            "Your inside bend radius ({} mm) is **below the minimum recommended** "
+            "for {} at {} mm thickness ({} mm). "
+            "Risk of cracking at the bend. Increase to at least {:.1f} mm.".format(
+                r_bend, material, t, r_lo, r_lo)
+        )
+    elif r_bend > r_hi * 3:
+        st.warning(
+            "Your inside bend radius ({} mm) is quite large. "
+            "The bend will be very gradual — this may be intentional for large-radius forming.".format(
+                r_bend)
+        )
+    else:
+        st.success(
+            "Inside bend radius {} mm is within the recommended range "
+            "({} – {} mm) for {} at {} mm thickness.".format(
+                r_bend, r_lo, r_hi, material, t)
+        )
+
+    st.divider()
+
+    # ── Blank size summary ────────────────────────────────────────
+    st.markdown("### Recommended blank (sheet) size to order")
+
+    handle   = 50   # handling margin each side
+    blank_w  = round(span_x + tr.get("total_bend_allowance", 0) + handle, 0)
+    blank_h  = round(span_y + tr.get("total_bend_allowance", 0) + handle, 0)
+
+    bc1, bc2 = st.columns(2)
+    bc1.metric("Minimum blank width",  "{:.0f} mm".format(blank_w))
+    bc2.metric("Minimum blank height", "{:.0f} mm".format(blank_h))
+    st.caption(
+        "Includes {:.1f} mm total bend allowance + {} mm handling margin each side. "
+        "Always order slightly larger — trim to fit is easier than piecing.".format(
+            tr.get("total_bend_allowance", 0), handle // 2)
+    )
+
 
 def _show_fabrication_guide(r, rw, rh, cd, h, ox, oy, n):
     """Render the full step-by-step fabrication guide."""
@@ -579,9 +868,10 @@ Trim with snips or a grinder, dress the edge, and re-check.
 if gen:
     with st.spinner("Calculating triangulation and flat pattern..."):
         try:
-            result = _compute(rw, rh, cd, h, ox, oy, n)
+            result = _compute(rw, rh, cd, h, ox, oy, n, t_mm, r_bend_mm, k_factor)
             st.session_state["result"] = result
-            st.session_state["params"] = (rw, rh, cd, h, ox, oy, n)
+            st.session_state["params"] = (rw, rh, cd, h, ox, oy, n,
+                                          t_mm, r_bend_mm, k_factor, material)
         except Exception as exc:
             st.error("Computation error: {}".format(exc))
             st.stop()
@@ -591,7 +881,8 @@ if gen:
 # ══════════════════════════════════════════════════════════════════
 if "result" in st.session_state:
     r  = st.session_state["result"]
-    pw, ph, cd_, hh, ox_, oy_, nn = st.session_state["params"]
+    pw, ph, cd_, hh, ox_, oy_, nn, t_, rb_, kf_, mat_ = st.session_state["params"]
+    tr = r.get("thick_rep", {})
 
     st.divider()
 
@@ -606,9 +897,9 @@ if "result" in st.session_state:
     st.divider()
 
     # ── Tabs ──────────────────────────────────────────────────────
-    tab_prev, tab_ws, tab_coord, tab_dl, tab_guide = st.tabs([
+    tab_prev, tab_ws, tab_coord, tab_dl, tab_thick, tab_guide = st.tabs([
         "📐 Preview", "🔧 Workshop Drawing", "📋 Coordinates", "⬇ Downloads",
-        "📖 How to Fabricate"
+        "📏 Thickness & Bending", "📖 How to Fabricate"
     ])
 
     # ── Tab 1: Preview ────────────────────────────────────────────
@@ -772,6 +1063,11 @@ if "result" in st.session_state:
         """)
 
     # ── Tab 5: How to Fabricate ───────────────────────────────────
+    # ── Tab 5: Thickness & Bending ────────────────────────────────
+    with tab_thick:
+        _show_thickness_tab(tr, t_, rb_, kf_, mat_, cd_, pw, ph)
+
+    # ── Tab 6: How to Fabricate ───────────────────────────────────
     with tab_guide:
         _show_fabrication_guide(r, pw, ph, cd_, hh, ox_, oy_, nn)
 
