@@ -297,7 +297,29 @@ st.set_page_config(
     page_title="Transition Calculator",
     page_icon="📐",
     layout="wide",
+    menu_items={
+        "Get Help":     None,
+        "Report a bug": None,
+        "About": (
+            "### Transition Calculator\n"
+            "True-length development values: C · J · F · L0..Ln\n\n"
+            "Quarter-development diagram with mirror line."
+        ),
+    },
 )
+
+# ── Hide Streamlit branding ───────────────────────────────────────
+st.markdown("""
+<style>
+  footer                          { visibility: hidden !important; height: 0; }
+  #MainMenu                       { visibility: hidden !important; }
+  div[data-testid="stDecoration"] { display: none !important; }
+  div[data-testid="stToolbar"]    { display: none !important; }
+  .viewerBadge_container__1QSob  { display: none !important; }
+  .styles_viewerBadge__1yB5_     { display: none !important; }
+  #stDecoration                   { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
 
 st.markdown("""
 <style>

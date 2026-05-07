@@ -59,11 +59,30 @@ st.set_page_config(
     page_icon="⚙",
     layout="wide",
     initial_sidebar_state="collapsed",
+    menu_items={
+        "Get Help":    None,
+        "Report a bug": None,
+        "About": (
+            "### Sheet Metal Transition Tool\n"
+            "Surface development for rectangle-to-circle transitions.\n\n"
+            "Generates flat patterns, workshop drawings, coordinates and DXF files."
+        ),
+    },
 )
 
 # ── Mobile-friendly CSS ────────────────────────────────────────────
 st.markdown("""
 <style>
+  /* ── Hide Streamlit branding, footer, GitHub links ── */
+  footer                          { visibility: hidden !important; height: 0; }
+  #MainMenu                       { visibility: hidden !important; }
+  header[data-testid="stHeader"]  { background: transparent; }
+  div[data-testid="stDecoration"] { display: none !important; }
+  div[data-testid="stToolbar"]    { display: none !important; }
+  .viewerBadge_container__1QSob  { display: none !important; }
+  .styles_viewerBadge__1yB5_     { display: none !important; }
+  #stDecoration                   { display: none !important; }
+
   /* Larger touch targets on mobile */
   div[data-testid="stNumberInput"] input  { font-size: 17px !important; height: 44px; }
   div[data-testid="stSlider"]             { padding-top: 6px; }
