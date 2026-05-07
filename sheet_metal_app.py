@@ -31,19 +31,25 @@ for _p in [_here, os.getcwd()]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from sheet_metal_transition import (
-    build_transition,
-    unfold_triangles,
-    get_all_boundaries,
-    map_2d_pts,
-    surface_area,
-    get_reference_points,
-    export_dxf,
-    _make_preview,
-    _make_workshop,
-    calculate_bend_data,
-    thickness_report,
-)
+try:
+    from sheet_metal_transition import (
+        build_transition,
+        unfold_triangles,
+        get_all_boundaries,
+        map_2d_pts,
+        surface_area,
+        get_reference_points,
+        export_dxf,
+        _make_preview,
+        _make_workshop,
+        calculate_bend_data,
+        thickness_report,
+    )
+except Exception as _import_err:
+    import traceback
+    st.error("**Import error — could not load geometry engine:**")
+    st.code(traceback.format_exc())
+    st.stop()
 
 # ══════════════════════════════════════════════════════════════════
 #  Page configuration  (must be FIRST Streamlit call)
