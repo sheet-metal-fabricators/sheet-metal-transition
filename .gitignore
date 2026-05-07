@@ -10,6 +10,9 @@
 !.streamlit/config.toml
 !.streamlit/credentials.toml
 !runtime.txt
+!pages/
+!pages/2_Transition_Calculator.py
+!transition_calc.py
 
 # Never commit credentials, logs, or trading files
 *.json
