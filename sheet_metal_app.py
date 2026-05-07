@@ -25,8 +25,11 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 # ── Import geometry engine from the tool file ─────────────────────
+# Add both the file's directory and cwd to path (handles Streamlit Cloud)
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
+for _p in [_here, os.getcwd()]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from sheet_metal_transition import (
     build_transition,
