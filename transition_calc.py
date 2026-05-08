@@ -175,7 +175,7 @@ def draw_quarter_development(ax, res):
     slants  = res['slants']
 
     # ── Fan angles: Ln nearly vertical, L0 upper-left ───────────────
-    angle_Ln = math.radians(80)
+    angle_Ln = math.radians(91)
     angle_L0 = math.radians(155)
     angles   = np.linspace(angle_Ln, angle_L0, n_quad + 1)
 

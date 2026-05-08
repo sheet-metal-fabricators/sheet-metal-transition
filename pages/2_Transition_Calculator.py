@@ -122,7 +122,7 @@ def draw_quarter_development(ax, res):
     # ── Step 1: place L-line endpoints using fan angles ──────────────
     # Fan from ~80° (Ln, nearly vertical) to ~155° (L0, upper-left)
     # measured from +x axis.  Equal angular spacing gives a clean visual.
-    angle_Ln = math.radians(80)    # Ln at 0° circle → nearly vertical
+    angle_Ln = math.radians(91)    # Ln at 0° circle → just left of vertical
     angle_L0 = math.radians(155)   # L0 at 90° circle → upper-left
 
     angles = np.linspace(angle_Ln, angle_L0, n_quad + 1)
