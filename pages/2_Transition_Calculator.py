@@ -98,100 +98,170 @@ def calc_trunc_pyramid(Lb, Wb, Lt, Wt, H):
 # ============================================================
 
 def draw_quarter_development(ax, res):
-    ax.clear(); ax.set_aspect('equal'); ax.axis('off')
-    ax.set_facecolor('#f8f8f0')
+    """
+    Quarter development diagram matching the reference tool style:
+    - Corner (apex) at BOTTOM-RIGHT of solid shape
+    - F base goes LEFT from corner
+    - L-lines fan UP-LEFT from corner
+    - Circle arc connects L-line endpoints (inner edge)
+    - Outer rect boundary connects F-end to outermost rect point
+    - Dashed MIRROR on the RIGHT side of the corner
+    - Mirror Line vertical through the corner
+    """
+    ax.clear()
+    ax.set_facecolor('#f8f8f8')
+    ax.axis('off')
 
-    W, n_quad = res['W'], res['n_quad']
-    L_vals, chord = res['L_vals'], res['chord']
-    J, F = res['J'], res['F']
+    n_quad  = res['n_quad']
+    L_vals  = res['L_vals']   # L_vals[0]=L0 (longest,α=90°) .. L_vals[-1]=Ln (α=0°)
+    chord   = res['chord']
+    J       = res['J']
+    F       = res['F']
+    slants  = res['slants']
 
-    corner_2d = np.array([0.0, 0.0])
-    rect_mid  = np.array([-W/2, 0.0])
+    # ── Step 1: place L-line endpoints using fan angles ──────────────
+    # Fan from ~80° (Ln, nearly vertical) to ~155° (L0, upper-left)
+    # measured from +x axis.  Equal angular spacing gives a clean visual.
+    angle_Ln = math.radians(80)    # Ln at 0° circle → nearly vertical
+    angle_L0 = math.radians(155)   # L0 at 90° circle → upper-left
 
-    # Build circle points by successive triangle placement
-    c_pts = [corner_2d + np.array([0.0, L_vals[-1]])]
-    for i in range(n_quad - 1, -1, -1):
-        prev  = c_pts[-1]
-        L_cur = L_vals[i]
-        d     = float(np.linalg.norm(prev - corner_2d))
-        if d < 1e-10:
-            c_pts.append(corner_2d + np.array([-L_cur*0.7, L_cur*0.7]))
-            continue
-        a_c  = (L_cur**2 - chord**2 + d**2) / (2*d)
-        h2   = max(0.0, L_cur**2 - a_c**2)
-        hh   = math.sqrt(h2)
-        dh   = (prev - corner_2d) / d
-        perp = np.array([-dh[1], dh[0]])
-        foot = corner_2d + a_c * dh
-        c1, c2 = foot + hh*perp, foot - hh*perp
-        c_pts.append(c1 if c1[0] <= c2[0] else c2)
-    c_pts = c_pts[::-1]
+    angles = np.linspace(angle_Ln, angle_L0, n_quad + 1)
+    # angles[0]  → Ln (rightmost, shortest angle from vertical)
+    # angles[-1] → L0 (leftmost, longest)
+    # But L_vals[0]=L0 (longest) and L_vals[-1]=Ln
+    # So: L_vals[i] goes with angles[n_quad - i]
 
-    # Outer rect edge points
+    c_pts = []   # circle arc endpoints in 2D
+    for i in range(n_quad + 1):
+        a   = angles[n_quad - i]      # L0 gets leftmost angle
+        L   = L_vals[i]
+        c_pts.append(np.array([L * math.cos(a), L * math.sin(a)]))
+
+    corner = np.array([0.0, 0.0])
+
+    # ── Step 2: outer rect boundary points ───────────────────────────
+    # Each outer point = circle arc point extended by its slant distance
+    # outward (away from corner)
     r_pts = []
     for i, cp in enumerate(c_pts):
-        slant = res['slants'][i]
-        d_out = cp - corner_2d
-        dn    = float(np.linalg.norm(d_out))
-        r_pts.append(cp + (slant * d_out / dn) if dn > 1e-10
-                     else cp + np.array([0, slant]))
+        norm = float(np.linalg.norm(cp))
+        if norm > 1e-6:
+            r_pts.append(cp + slants[i] * cp / norm)
+        else:
+            r_pts.append(cp + np.array([0.0, slants[i]]))
 
-    # Scale
-    all_pts = c_pts + r_pts + [corner_2d, rect_mid]
-    xs = [p[0] for p in all_pts]; ys = [p[1] for p in all_pts]
-    span = max(max(xs)-min(xs), max(ys)-min(ys))
-    pad  = span * 0.18
-    mirror_x = c_pts[0][0]
+    # ── Step 3: F base end ────────────────────────────────────────────
+    # F goes LEFT from corner.  Length = F (full short side).
+    F_end = np.array([-F, 0.0])
 
-    # Draw
-    ax.plot([p[0] for p in r_pts], [p[1] for p in r_pts],
-            color='#cc5500', lw=2.5, label='Rect edge')
-    ax.plot([rect_mid[0], corner_2d[0]], [0, 0],
-            color='#0044aa', lw=2.5, label='F (rect side)')
+    # Outer boundary path: from F_end → along rect perimeter → to r_pts[0]
+    # Simplified as two segments: F_end → r_pts[-1] (Ln side) for left wall,
+    # then connect r_pts in order.  Draw as: F_end → r_pts[-1] → ... → r_pts[0]
+    outer_path_x = [F_end[0]] + [r[0] for r in reversed(r_pts)]
+    outer_path_y = [F_end[1]] + [r[1] for r in reversed(r_pts)]
+
+    # ── Compute bounding box for axis limits ─────────────────────────
+    all_pts = c_pts + r_pts + [corner, F_end]
+    xs = [p[0] for p in all_pts]
+    ys = [p[1] for p in all_pts]
+    xmin, xmax = min(xs), max(xs)
+    ymin, ymax = min(ys), max(ys)
+    span = max(xmax - xmin, ymax - ymin)
+    pad  = span * 0.15
+
+    # ── Draw dashed MIRROR first (behind solid) ───────────────────────
+    # Mirror reflects x: (x,y) → (-x, y)
+    # F mirror: goes RIGHT from corner
+    ax.plot([0, F], [0, 0], color='#0044aa', lw=1.8, ls='--', alpha=0.45)
+    # L-line mirrors
     for cp in c_pts:
-        ax.plot([corner_2d[0], cp[0]], [corner_2d[1], cp[1]],
-                'k-', lw=1.0, alpha=0.65)
-    ax.plot([p[0] for p in c_pts], [p[1] for p in c_pts],
-            'r-', lw=2.5, label='Circle arc')
-    ax.axvline(mirror_x, color='#888', ls='--', lw=1.0)
-    ax.text(mirror_x + span*0.01, max(ys) + pad*0.25,
-            'Mirror Line', fontsize=7, color='#666')
+        ax.plot([0, -cp[0]], [0, cp[1]], 'k--', lw=0.7, alpha=0.35)
+    # Circle arc mirror
+    ax.plot([-cp[0] for cp in c_pts], [cp[1] for cp in c_pts],
+            'r--', lw=1.8, alpha=0.45)
+    # Outer boundary mirror
+    ax.plot([-x for x in outer_path_x], outer_path_y,
+            color='#cc5500', lw=1.5, ls='--', alpha=0.4)
 
-    fs = 8
-    # F
-    ax.annotate('', xy=corner_2d, xytext=rect_mid,
-                arrowprops=dict(arrowstyle='<->', color='#0044aa', lw=1.2))
-    ax.text((rect_mid[0]+corner_2d[0])/2, -span*0.05,
-            'F = {:.0f}'.format(F), ha='center', va='top',
-            fontsize=fs, color='#0044aa', fontweight='bold')
+    # ── Mirror Line (vertical dashed through corner) ──────────────────
+    ax.axvline(0, color='#888888', ls='--', lw=1.0, alpha=0.8)
+    ax.text(span * 0.04, ymax + pad * 0.5, 'Mirror Line',
+            fontsize=7.5, color='#666666', ha='left', va='bottom')
 
-    # C chord label
+    # ── Draw solid quarter development ────────────────────────────────
+    # Outer rect boundary (orange solid)
+    ax.plot(outer_path_x, outer_path_y,
+            color='#cc5500', lw=2.2, solid_capstyle='round',
+            label='Rect edge (outer)')
+
+    # F base (blue solid, with arrow)
+    ax.annotate('', xy=(F_end[0], 0), xytext=(0, 0),
+                arrowprops=dict(arrowstyle='<->', color='#0044aa',
+                                lw=1.4, mutation_scale=10))
+    ax.plot([F_end[0], 0], [0, 0], color='#0044aa', lw=2.2)
+    ax.text((F_end[0]) / 2, -span * 0.055,
+            'F = {:.0f} mm'.format(F),
+            ha='center', va='top', fontsize=8.5,
+            color='#0044aa', fontweight='bold')
+
+    # L-lines (black solid)
+    for i, cp in enumerate(c_pts):
+        ax.plot([0, cp[0]], [0, cp[1]], 'k-', lw=1.1, alpha=0.75, zorder=3)
+
+    # Circle arc (red solid)
+    ax.plot([cp[0] for cp in c_pts], [cp[1] for cp in c_pts],
+            'r-', lw=2.5, solid_capstyle='round',
+            label='Circle arc (inner)', zorder=4)
+
+    # ── Labels ────────────────────────────────────────────────────────
+    fs = 8.5
+
+    # L labels along each radial line (mid-point)
+    for i, (cp, lv) in enumerate(zip(c_pts, L_vals)):
+        mid   = cp * 0.52
+        lbl   = 'L{}'.format(n_quad - i)   # L0 = longest
+        # offset label slightly to avoid overlapping the line
+        perp  = np.array([-cp[1], cp[0]])
+        pn    = float(np.linalg.norm(perp))
+        offset = (perp / pn * span * 0.035) if pn > 1e-6 else np.zeros(2)
+        ax.text(mid[0] + offset[0], mid[1] + offset[1], lbl,
+                ha='center', va='center', fontsize=fs - 0.5,
+                color='#333333', fontweight='bold')
+
+    # C label between last two circle arc points (rightmost segment)
     if len(c_pts) >= 2:
-        mid_c = (c_pts[-1] + c_pts[-2]) / 2
-        ax.text(mid_c[0]+span*0.02, mid_c[1], 'C',
-                ha='left', va='center', fontsize=fs, color='red', fontweight='bold')
+        m = (c_pts[-1] + c_pts[-2]) / 2
+        ax.text(m[0] + span*0.03, m[1] + span*0.02, 'C',
+                ha='left', va='bottom', fontsize=fs,
+                color='red', fontweight='bold')
 
-    # J label
-    j_idx = res['slants'].index(max(res['slants']))
-    if j_idx < len(r_pts) and j_idx < len(c_pts):
+    # J label on the longest slant (outer boundary at max-slant index)
+    j_idx = slants.index(max(slants))
+    if j_idx < len(c_pts) and j_idx < len(r_pts):
         mj = (c_pts[j_idx] + r_pts[j_idx]) / 2
-        ax.text(mj[0]+span*0.02, mj[1], 'J',
-                ha='left', va='center', fontsize=fs,
+        ax.text(mj[0] - span*0.04, mj[1], 'J',
+                ha='right', va='center', fontsize=fs,
                 color='#cc5500', fontweight='bold')
 
-    # L labels
-    for i, (cp, lv) in enumerate(zip(c_pts, L_vals)):
-        mid = (corner_2d + cp) / 2
-        ax.text(mid[0]-span*0.04, mid[1],
-                'L{}'.format(n_quad - i),
-                ha='right', va='center', fontsize=fs-1, color='#333')
+    # Corner dot
+    ax.plot(0, 0, 'ko', ms=6, zorder=6)
 
-    ax.plot(*corner_2d, 'ko', ms=5, zorder=5)
-    ax.set_xlim(min(xs)-pad, max(xs)+pad*1.8)
-    ax.set_ylim(min(ys)-pad*0.5, max(ys)+pad*0.5)
-    ax.set_title('Quarter Development  (mirror for full half)',
-                 fontsize=9, pad=4)
-    ax.legend(fontsize=7, loc='lower right')
+    # ── Axis limits ───────────────────────────────────────────────────
+    # Include mirror extent (positive x up to F)
+    ax.set_xlim(xmin - pad, max(xmax, F) + pad * 1.5)
+    ax.set_ylim(ymin - pad * 1.2, ymax + pad * 0.8)
+    ax.set_aspect('equal', adjustable='datalim')
+    ax.set_title('Quarter Development   (solid = left half, dashed = mirror)',
+                 fontsize=9, pad=5)
+
+    handles = [
+        plt.Line2D([0],[0], color='red',     lw=2, label='Circle arc (inner)'),
+        plt.Line2D([0],[0], color='#cc5500', lw=2, label='Rect edge (outer)'),
+        plt.Line2D([0],[0], color='#0044aa', lw=2, label='F  (rect short side)'),
+        plt.Line2D([0],[0], color='black',   lw=1, label='L0..Ln  (true lengths)'),
+    ]
+    ax.legend(handles=handles, fontsize=7, loc='lower right',
+              framealpha=0.9, edgecolor='#aaaaaa')
 
 
 def draw_3d_sketch(ax, L, W, D, H, ox=0.0, oy=0.0):
