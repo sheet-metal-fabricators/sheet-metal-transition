@@ -115,17 +115,6 @@ st.markdown("""
 
 # ══════════════════════════════════════════════════════════════════
 #  Top navigation
-# ══════════════════════════════════════════════════════════════════
-nav1, nav2 = st.columns(2)
-with nav1:
-    st.page_link("sheet_metal_app.py",
-                 label="⚙ Sheet Metal Development",
-                 icon="⚙", use_container_width=True)
-with nav2:
-    st.page_link("pages/2_Transition_Calculator.py",
-                 label="📐 Transition Calculator",
-                 icon="📐", use_container_width=True)
-
 st.divider()
 
 # ══════════════════════════════════════════════════════════════════
